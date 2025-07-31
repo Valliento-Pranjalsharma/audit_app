@@ -1,750 +1,508 @@
-#!/usr/bin/env python3
-"""
-Audit App Dashboard
--------------------
-Final merged version:
-- Playback preview + scrub slider + time label.
-- Scrollable video list (middle panel).
-- Working Video Information panel.
-- Clean function ordering (no NameError).
-- Backward-compatible DB row handling (6 or 8 columns).
-"""
-
-import tkinter as tk
-from tkinter import ttk, messagebox
-from PIL import Image, ImageTk, Image as PILImage
-import sqlite3
+import sys
 import os
-import cv2
-import datetime
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout,
+    QHBoxLayout, QFrame, QTableWidget, QTableWidgetItem, QLineEdit,
+    QSizePolicy, QMessageBox, QSplitter, QWidget, QStyle, QToolButton, QHeaderView,
+    QScrollArea
+)
+from PyQt5.QAxContainer import QAxWidget
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QPixmap
 
-# -----------------------------------------------------------------------------
-# THEME (optional)
-# -----------------------------------------------------------------------------
-try:
-    import theme  # local file (optional)
-except ImportError:
-    theme = None
 
-# -----------------------------------------------------------------------------
-# CONFIG / CONSTANTS
-# -----------------------------------------------------------------------------
-DB_PATH = "videos.db"
-VIDEOS_DIR = "videos"
-THUMBS_DIR = "thumbnails"
-JUMP_SECONDS = 5
-
-# column index helpers (GUI always uses 8-column tuples)
-IDX_ID = 0
-IDX_TITLE = 1
-IDX_TIMESTAMP = 2
-IDX_DURATION = 3
-IDX_FILEPATH = 4
-IDX_THUMB = 5
-IDX_BOOTH = 6
-IDX_CAMERA = 7
-
-# ensure dirs exist (avoid crashes)
-os.makedirs(VIDEOS_DIR, exist_ok=True)
-os.makedirs(THUMBS_DIR, exist_ok=True)
-
-# -----------------------------------------------------------------------------
-# DB ACCESS
-# -----------------------------------------------------------------------------
-def fetch_videos_from_db():
-    """Return raw DB rows (whatever schema is in file)."""
-    if not os.path.exists(DB_PATH):
-        return []
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT * FROM videos ORDER BY id")
-        rows = cursor.fetchall()
-    except Exception as e:
-        print(f"DB error: {e}")
-        rows = []
-    finally:
-        conn.close()
-    return rows
-
-# -----------------------------------------------------------------------------
-# Fallback dummy data (used only if DB empty)
-# -----------------------------------------------------------------------------
-DUMMY_VIDEOS = [
-    (1, "Booth A1 Entry",   "2025-07-21 09:45:00", "00:25", "videos/booth_a1.mp4",    "thumbnails/booth_a1.jpg",   "A1", "001"),
-    (2, "Highway Toll",     "2025-07-20 14:30:00", "00:30", "videos/highway.mp4",     "thumbnails/highway.jpg",    "A2", "002"),
-    (3, "Parking Lot Sweep","2025-07-19 11:00:00", "01:10", "videos/parking.mp4",     "thumbnails/parking.jpg",    "A1", "001"),
-    (4, "Night Patrol",     "2025-07-18 22:05:00", "00:40", "videos/night_patrol.mp4","thumbnails/night.jpg",      "A2", "002"),
+# --- Sample Transaction Data ---
+# This list holds the data for the audit transactions.
+# Each tuple represents a single transaction with various details.
+# The structure is:
+# (ID, Timestamp, TC Class, AVC, Amount/Duration, VehRegNo, Payment Mode,
+#  Vehicle Class, Booth, Camera, Title, Video Path, LP Image Path, All Images Path)
+transaction_data = [
+    (1, "2024-07-19 11:20", "A1", "Audit Footage 12", "$00:25", "XYZ-123",
+     "Cash", "Car", "A1", "001", "Audit Footage 12",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video12.mp4",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png"),
+    (2, "2024-07-19 11:10", "A1", "Audit Footage 13", "$00:30", "XYZ-124",
+     "Card", "Truck", "A1", "002", "Audit Footage 13",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video13.mp4",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb13.png",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb13.png"),
+    (3, "2024-07-19 11:00", "A2", "Audit Footage 14", "$00:35", "XYZ-125",
+     "Pass", "Bike", "A2", "003", "Audit Footage 14",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video14.mp4",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb14.png",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb14.png"),
+    (4, "2024-07-19 10:50", "A3", "Audit Footage 15", "$00:40", "XYZ-126",
+     "Cash", "Car", "A3", "004", "Audit Footage 15",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video15.mp4",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb15.png",
+     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb15.png"),
 ]
 
-def _coerce_rows_to_8cols(rows):
-    """Take DB rows (len 6 or 8) and return list of 8-col tuples."""
-    out = []
-    for r in rows:
-        if len(r) >= 8:
-            out.append(tuple(r[:8]))
-        elif len(r) == 6:
-            # (id, title, timestamp, duration, filepath, thumb)
-            out.append(tuple(r) + ("A1", "001"))
+# Populate additional sample data for demonstration purposes
+for i in range(5, 40):
+    transaction_data.append((
+        i,
+        f"2024-07-19 10:{50 - (i % 60):02d}", # Timestamp
+        f"A{i%5 + 1}", # TC Class
+        f"Audit Footage {10 + i}", # AVC
+        f"${20 + i}", # Amount / Duration (re-used for both in this example)
+        f"XYZ-{100 + i}", # VehRegNo
+        "Cash" if i % 3 == 0 else "Card", # Payment Mode
+        ["Car", "Truck", "Bike", "Bus", "Van"][i % 5], # Vehicle Class
+        f"A{i%5 + 1}", # Booth
+        f"00{i:03d}", # Camera (original txn[9] is 001, 002 etc)
+        f"Audit Footage {10 + i}", # Title (original txn[10] is Audit Footage)
+        r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video12.mp4", # Sample Video Path
+        r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png", # Sample LP Image Path
+        r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png" # Sample All Images Path
+    ))
+
+
+class AuditApp(QMainWindow):
+    """
+    Main application window for the Audit App.
+    It provides a UI for viewing transaction data, playing associated videos,
+    displaying images, and performing audit actions.
+    """
+    def __init__(self):
+        """
+        Initializes the AuditApp window, sets up the main layout,
+        and calls methods to create the left, center, and right panels.
+        """
+        super().__init__()
+        self.setWindowTitle("Audit App with Embedded Windows Media Player")
+        self.setGeometry(150, 80, 1600, 900) # Set initial window position and size
+
+        self.current_video_path = None # Stores the path of the currently playing video
+
+        # Create a QSplitter to allow resizing of panels horizontally
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.setCentralWidget(self.main_splitter) # Set the splitter as the central widget
+
+        # Call methods to create and add each panel to the splitter
+        self.create_left_panel()
+        self.create_center_panel()
+        self.create_right_panel()
+
+    def create_left_panel(self):
+        """
+        Creates the left panel of the application, containing filter inputs,
+        Refresh/Done buttons, and an embedded Windows Media Player.
+        """
+        self.left_panel = QFrame()
+        self.left_panel.setStyleSheet("background-color: #232629;") # Dark background
+        self.left_panel.setMinimumWidth(350) # Set a minimum width for the panel
+        self.left_layout = QVBoxLayout(self.left_panel) # Vertical layout for the left panel
+        self.left_layout.setContentsMargins(12, 12, 12, 12) # Padding around content
+        self.left_layout.setSpacing(15) # Spacing between widgets
+
+        # --- Filter Section ---
+        self.filters_frame = QFrame()
+        self.filters_layout = QVBoxLayout(self.filters_frame)
+        self.filters_layout.setSpacing(10)
+        filter_labels = [
+            "Lane:", "Shift:", "User:", "Vehicle Class:", "Exempt Class:",
+            "Payment Mode:", "Pass Type:", "Tran Filter:", "Start Date:", "End Date:"
+        ]
+        self.filter_entries = {} # Dictionary to store QLineEdit widgets for filters
+        for label in filter_labels:
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: white; font-weight: bold; font-size: 11pt;")
+            edit = QLineEdit()
+            edit.setStyleSheet("background-color: #2e3237; color: white; border-radius: 3px; padding: 6px;")
+            self.filters_layout.addWidget(lbl)
+            self.filters_layout.addWidget(edit)
+            self.filter_entries[label] = edit # Store the QLineEdit for later access
+        self.left_layout.addWidget(self.filters_frame)
+
+        # --- Buttons Section (Refresh and Done) ---
+        btn_frame = QHBoxLayout() # Horizontal layout for buttons
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setStyleSheet(
+            "background-color: #303841; color: white; padding: 8px; font-weight: bold; border-radius: 5px;"
+        )
+        refresh_btn.clicked.connect(self.refresh_table) # Connect refresh button to method
+        done_btn = QPushButton("Done")
+        done_btn.setStyleSheet(
+            "background-color: #218c54; color: white; padding: 8px; font-weight: bold; border-radius: 5px;"
+        )
+        btn_frame.addWidget(refresh_btn)
+        btn_frame.addWidget(done_btn)
+        self.left_layout.addLayout(btn_frame)
+
+        # --- Video Player Section ---
+        video_label = QLabel("Video Player")
+        video_label.setStyleSheet("color: white; font-size: 16pt; font-weight: bold; margin-top: 20px;")
+        self.left_layout.addWidget(video_label)
+
+        self.video_frame = QFrame()
+        self.video_frame.setStyleSheet("background-color: black; border-radius: 6px;")
+        self.video_frame.setFixedSize(400, 225) # Fixed size for the video player frame
+        self.video_layout = QVBoxLayout(self.video_frame)
+        self.video_layout.setContentsMargins(0, 0, 0, 0) # No padding for the video player
+
+        # QAxWidget is used to embed ActiveX controls, specifically Windows Media Player (WMPlayer.OCX)
+        self.player = QAxWidget("WMPlayer.OCX")
+        self.player.setProperty("uiMode", "full") # Display full UI controls
+        self.player.setProperty("stretchToFit", True) # Stretch video to fit control size
+        self.player.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding) # Allow player to expand
+        self.video_layout.addWidget(self.player)
+        self.left_layout.addWidget(self.video_frame, alignment=Qt.AlignHCenter) # Center the video frame
+        self.main_splitter.addWidget(self.left_panel) # Add the left panel to the main splitter
+
+    def create_center_panel(self):
+        """
+        Creates the central panel of the application, which includes:
+        - Input fields for Transaction ID and Vehicle Registration Number.
+        - Buttons for Get, Export as PDF, and Export to Excel.
+        - A QTableWidget to display transaction data.
+        - Labels to display LP (License Plate) and All Images.
+        """
+        self.center_panel = QFrame()
+        # Set white background for the main center panel for a clean look
+        self.center_panel.setStyleSheet("background-color: white; border-radius: 8px;")
+        self.center_layout = QVBoxLayout(self.center_panel) # Vertical layout for the center panel
+        self.center_layout.setContentsMargins(12, 12, 12, 12) # Padding around content
+        self.center_layout.setSpacing(12) # Spacing between widgets
+
+        # --- Top Header Panel (Filter/Export Controls) ---
+        header_panel = QFrame()
+        header_panel.setStyleSheet("background-color: #f0f0f0; border-radius: 5px; padding: 10px;")
+        header_layout = QHBoxLayout(header_panel) # Horizontal layout for header controls
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(15)
+
+        # Transaction ID input
+        tran_id_label = QLabel("Tran Id:")
+        tran_id_label.setStyleSheet("color: #333; font-weight: bold; font-size: 14px;")
+        self.tran_id_input = QLineEdit()
+        self.tran_id_input.setPlaceholderText("Enter Tran Id")
+        self.tran_id_input.setFixedWidth(120)
+        self.tran_id_input.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc; border-radius: 3px; padding: 5px;")
+
+        # Vehicle Registration Number input
+        veh_reg_label = QLabel("Veh Reg No:")
+        veh_reg_label.setStyleSheet("color: #333; font-weight: bold; font-size: 14px;")
+        self.veh_reg_input = QLineEdit()
+        self.veh_reg_input.setPlaceholderText("Enter Vehicle No")
+        self.veh_reg_input.setFixedWidth(120)
+        self.veh_reg_input.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc; border-radius: 3px; padding: 5px;")
+
+        # Get Button
+        get_btn = QPushButton("Get")
+        get_btn.setFixedWidth(60)
+        get_btn.setStyleSheet("background-color: #007bff; color: white; padding: 6px 12px; border-radius: 5px; font-weight: bold;")
+        get_btn.clicked.connect(self.apply_filters) # Connect to the filter application method
+
+        # Export as PDF Button
+        export_pdf_btn = QPushButton("Export as PDF")
+        export_pdf_btn.setFixedWidth(100)
+        export_pdf_btn.setStyleSheet("background-color: #28a745; color: white; padding: 6px 12px; border-radius: 5px; font-weight: bold;")
+        # TODO: Add PDF export logic here when implemented
+
+        # Export to Excel Button (QToolButton for icon)
+        excel_btn = QToolButton()
+        excel_btn.setIcon(self.style().standardIcon(QStyle.SP_DriveHDIcon)) # Standard icon for hard drive/export
+        excel_btn.setIconSize(QSize(24, 24))
+        excel_btn.setToolTip("Export to Excel")
+        excel_btn.setStyleSheet("background-color: #ffc107; border-radius: 5px; padding: 5px;")
+        # TODO: Add Excel export logic here when implemented
+
+        # Add widgets to the header layout
+        header_layout.addWidget(tran_id_label)
+        header_layout.addWidget(self.tran_id_input)
+        header_layout.addWidget(veh_reg_label)
+        header_layout.addWidget(self.veh_reg_input)
+        header_layout.addWidget(get_btn)
+        header_layout.addWidget(export_pdf_btn)
+        header_layout.addWidget(excel_btn)
+        header_layout.addStretch() # Pushes all widgets to the left
+
+        self.center_layout.addWidget(header_panel) # Add the header panel to the center layout
+
+        # --- Transaction Table Section ---
+        self.table = QTableWidget()
+        self.table.setRowCount(len(transaction_data))
+        self.table.setColumnCount(11) # Define 11 columns for the table
+        headers = [
+            "Time", "TC Class", "AVC", "Amount", "VehRegNo", "Payment Mode",
+            "Vehicle Class", "Booth", "Camera", "Title", "Duration"
+        ]
+        self.table.setHorizontalHeaderLabels(headers) # Set column headers
+        self.table.setSelectionBehavior(self.table.SelectRows) # Select entire row on click
+        self.table.setEditTriggers(self.table.NoEditTriggers) # Make table read-only
+        self.table.verticalHeader().setVisible(False) # Hide row numbers
+
+        # Apply enhanced table styling for a modern look
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: white;
+                color: #333; /* Darker text for better contrast */
+                gridline-color: #e0e0e0; /* Lighter gridlines */
+                font-size: 11pt;
+                font-family: 'Segoe UI', Arial, sans-serif; /* Modern, clean font */
+                border: 1px solid #ddd; /* Subtle border around table */
+                border-radius: 5px;
+            }
+            QHeaderView::section {
+                background-color: #f8f8f8; /* Light header background */
+                color: #333;
+                padding: 8px; /* More padding for headers */
+                border: 1px solid #e0e0e0;
+                font-weight: bold;
+                font-size: 10pt;
+            }
+            QTableWidget::item {
+                padding: 5px; /* Padding for table cells */
+            }
+            QTableWidget::item:selected {
+                background-color: #cceeff; /* Lighter blue for selection highlight */
+                color: #333;
+            }
+            /* Custom scroll bar styling for a cleaner look */
+            QScrollBar:vertical {
+                border: none;
+                background: #f0f0f0;
+                width: 10px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c0c0c0;
+                min-height: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px; /* Hide default scroll bar buttons */
+            }
+        """)
+
+        # Stretch columns to fill the available space horizontally
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        # Ensure scroll bars are always visible if content overflows
+        self.table.setHorizontalScrollMode(self.table.ScrollPerPixel)
+        self.table.setVerticalScrollMode(self.table.ScrollPerPixel)
+        self.table.cellClicked.connect(self.on_table_row_selected) # Connect cell click to handler
+        self.populate_transaction_table() # Populate the table with initial data
+        self.center_layout.addWidget(self.table) # Add the table to the center layout
+
+        # --- Images Section (LP Image and All Images) ---
+        self.images_frame = QFrame()
+        self.images_frame.setStyleSheet("background-color: #f0f0f0; border-radius: 5px; padding: 10px;")
+        images_layout = QHBoxLayout(self.images_frame) # Horizontal layout for images
+        images_layout.setContentsMargins(0, 0, 0, 0)
+        images_layout.setSpacing(15) # Increased spacing for better visual separation
+
+        # LP (License Plate) Image Label
+        self.lp_image_label = QLabel("LP Image")
+        self.lp_image_label.setStyleSheet(
+            "background-color: white; color: #555; font-size: 12pt; border-radius: 6px; border: 1px dashed #ccc;"
+        )
+        self.lp_image_label.setFixedSize(320, 180) # Fixed size for consistency
+        self.lp_image_label.setAlignment(Qt.AlignCenter) # Center text/image
+        self.lp_image_label.setScaledContents(True) # Scale pixmap to fit label
+        images_layout.addWidget(self.lp_image_label)
+
+        # All Images Label
+        self.all_image_label = QLabel("All Images")
+        self.all_image_label.setStyleSheet(
+            "background-color: white; color: #555; font-size: 12pt; border-radius: 6px; border: 1px dashed #ccc;"
+        )
+        self.all_image_label.setFixedSize(320, 180) # Fixed size for consistency
+        self.all_image_label.setAlignment(Qt.AlignCenter)
+        self.all_image_label.setScaledContents(True)
+        images_layout.addWidget(self.all_image_label)
+
+        images_layout.addStretch() # Pushes images to the left
+
+        self.center_layout.addWidget(self.images_frame) # Add the images frame to the center layout
+        self.main_splitter.addWidget(self.center_panel) # Add the center panel to the main splitter
+
+    def create_right_panel(self):
+        """
+        Creates the right panel of the application, displaying transaction details,
+        an audit comment input, and various audit action buttons.
+        """
+        self.right_panel = QFrame()
+        self.right_panel.setStyleSheet("background-color: #383838; border-radius: 8px;") # Dark gray background
+        self.right_panel.setMinimumWidth(320) # Set a minimum width for the panel
+        self.right_layout = QVBoxLayout(self.right_panel) # Vertical layout for the right panel
+        self.right_layout.setContentsMargins(12, 12, 12, 12) # Padding around content
+        self.right_layout.setSpacing(15) # Spacing between widgets
+
+        # --- Transaction Details Info Box ---
+        self.info_box = QLabel("Select a transaction to see details")
+        self.info_box.setStyleSheet(
+            "background-color: white; padding: 12px; font-size: 12pt; border-radius: 6px; color: #333;")
+        self.info_box.setWordWrap(True) # Allow text to wrap within the label
+        self.info_box.setMinimumHeight(280) # Set a minimum height for the info box
+        self.right_layout.addWidget(self.info_box)
+
+        # --- Audit Comment Section ---
+        comment_lbl = QLabel("Audit Comment:")
+        # Text color is already set to white for better visibility on dark background
+        comment_lbl.setStyleSheet("color: white; font-weight: bold; font-size: 11pt;")
+        self.right_layout.addWidget(comment_lbl)
+
+        self.comment_edit = QLineEdit()
+        self.comment_edit.setStyleSheet(
+            "background-color: #505050; color: white; padding: 8px; border-radius: 5px;")
+        self.right_layout.addWidget(self.comment_edit)
+
+        # --- Audit Action Buttons ---
+        audit_buttons = [
+            "Edit Transaction", "Cancel Transaction", "ETC Audit",
+            "IAVC Audit", "Operator Correct", "AVC Correct", "Auditor Correct"
+        ]
+        # Text color of buttons is already set to white for better visibility
+        btn_style = (
+            "background-color: #505050; color: white; padding: 10px; font-weight: bold;"
+            "border-radius: 6px; margin-top: 7px;"
+            "QPushButton:hover { background-color: #606060; }" # Add a hover effect for buttons
+        )
+        for txt in audit_buttons:
+            btn = QPushButton(txt)
+            btn.setStyleSheet(btn_style)
+            # Connect each button to the audit_button_clicked method, passing its text
+            btn.clicked.connect(lambda checked, t=txt: self.audit_button_clicked(t))
+            self.right_layout.addWidget(btn)
+
+        self.right_layout.addStretch() # Pushes all widgets to the top
+        self.main_splitter.addWidget(self.right_panel) # Add the right panel to the main splitter
+
+    def populate_transaction_table(self):
+        """
+        Populates the QTableWidget with data from the `transaction_data` list.
+        Clears existing rows before adding new ones.
+        """
+        self.table.setRowCount(0) # Clear existing rows to prevent duplicates on refresh
+        self.table.setRowCount(len(transaction_data)) # Set the number of rows based on data length
+
+        for row_idx, txn in enumerate(transaction_data):
+            # Populate each cell with the corresponding data from the transaction tuple
+            self.table.setItem(row_idx, 0, QTableWidgetItem(txn[1]))   # Time (txn[1])
+            self.table.setItem(row_idx, 1, QTableWidgetItem(txn[2]))   # TC Class (txn[2])
+            self.table.setItem(row_idx, 2, QTableWidgetItem(txn[3]))   # AVC (txn[3])
+            self.table.setItem(row_idx, 3, QTableWidgetItem(txn[4]))   # Amount (txn[4])
+            self.table.setItem(row_idx, 4, QTableWidgetItem(txn[5]))   # VehRegNo (txn[5])
+            self.table.setItem(row_idx, 5, QTableWidgetItem(txn[6]))   # Payment Mode (txn[6])
+            self.table.setItem(row_idx, 6, QTableWidgetItem(txn[7]))   # Vehicle Class (txn[7])
+            self.table.setItem(row_idx, 7, QTableWidgetItem(txn[8]))   # Booth (txn[8])
+            self.table.setItem(row_idx, 8, QTableWidgetItem(txn[9]))   # Camera (txn[9])
+            self.table.setItem(row_idx, 9, QTableWidgetItem(txn[10]))  # Title (txn[10])
+            self.table.setItem(row_idx, 10, QTableWidgetItem(txn[4]))  # Duration (re-using amount for duration as per original mapping)
+
+    def on_table_row_selected(self, row, column):
+        """
+        Handler for when a row in the transaction table is clicked.
+        Updates the info box with transaction details, loads images,
+        and plays the associated video.
+        """
+        txn = transaction_data[row] # Get the selected transaction data
+
+        # Update the info box with detailed transaction information
+        details = (
+            f"<b>ID:</b> {txn[0]}<br>"
+            f"<b>Title:</b> {txn[10]}<br>"
+            f"<b>Timestamp:</b> {txn[1]}<br>"
+            f"<b>Duration:</b> {txn[4]}<br>" # Using txn[4] as Duration as per table mapping
+            f"<b>Booth:</b> {txn[8]}<br>"
+            f"<b>Camera:</b> {txn[9]}<br>"
+            f"<b>Vehicle No:</b> {txn[5]}"
+        )
+        self.info_box.setText(details)
+
+        # --- Load LP Image ---
+        lp_image_path = txn[12]
+        if os.path.exists(lp_image_path):
+            # Load pixmap, scale it to fit the label while maintaining aspect ratio
+            pixmap = QPixmap(lp_image_path).scaled(self.lp_image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.lp_image_label.setPixmap(pixmap)
         else:
-            # unexpected schema; pad
-            padded = list(r) + ["?"] * (8 - len(r))
-            out.append(tuple(padded[:8]))
-    return out
+            self.lp_image_label.setText("LP Image Not Found") # Display message if image not found
+            self.lp_image_label.setPixmap(QPixmap()) # Clear any previous pixmap
 
-def load_video_data():
-    rows = fetch_videos_from_db()
-    if rows:
-        return _coerce_rows_to_8cols(rows)
-    # DB empty? fallback
-    return list(DUMMY_VIDEOS)
-
-# -----------------------------------------------------------------------------
-# Utility helpers
-# -----------------------------------------------------------------------------
-def parse_timestamp(ts_str):
-    try:
-        return datetime.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        return None
-
-def sort_videos(rows, latest_first=True):
-    return sorted(
-        rows,
-        key=lambda r: parse_timestamp(r[IDX_TIMESTAMP]) or datetime.datetime.min,
-        reverse=latest_first
-    )
-
-def load_thumbnail(path, size=(160, 90)):
-    """Return an ImageTk object (always succeeds)."""
-    try:
-        if not os.path.exists(path):
-            return ImageTk.PhotoImage(PILImage.new('RGB', size, color='gray'))
-        img = PILImage.open(path).resize(size)
-        return ImageTk.PhotoImage(img)
-    except Exception as e:
-        print(f"Thumbnail error {path}: {e}")
-        return ImageTk.PhotoImage(PILImage.new('RGB', size, color='gray'))
-
-def format_time(frames, fps=30):
-    if not fps or fps <= 0:
-        fps = 30
-    seconds = int(frames / fps)
-    mins = seconds // 60
-    secs = seconds % 60
-    return f"{mins:02d}:{secs:02d}"
-
-# -----------------------------------------------------------------------------
-# Embedded OpenCV Player
-# -----------------------------------------------------------------------------
-class OpenCVEmbeddedPlayer:
-    def __init__(self, parent, display_size=(180, 100)):
-        self.parent = parent
-        self.display_w, self.display_h = display_size
-        self.label = tk.Label(parent, bg="black")
-        self.label.pack(fill="both", expand=True)
-        self.cap = None
-        self.playing = False
-        self.video_path = None
-        self.fps_delay = 33
-        self.total_frames = 0
-        self.current_frame_index = 0
-        self.speed_factor = 1.0
-        self.on_frame_callback = None
-        self._after_id = None
-
-    def load(self, path):
-        self.stop()
-        if not os.path.exists(path):
-            messagebox.showerror("Error", f"Video not found: {path}")
-            return
-
-        cap = cv2.VideoCapture(path)
-        if not cap.isOpened():
-            messagebox.showerror("Error", f"Cannot open video: {path}")
-            return
-
-        self.cap = cap
-        self.video_path = path
-
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if fps and fps > 1:
-            self.fps_delay = int(1000 / fps)
+        # --- Load All Images ---
+        all_image_path = txn[13]
+        if os.path.exists(all_image_path):
+            pixmap = QPixmap(all_image_path).scaled(self.all_image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.all_image_label.setPixmap(pixmap)
         else:
-            self.fps_delay = 33
+            self.all_image_label.setText("All Images Not Found")
+            self.all_image_label.setPixmap(QPixmap()) # Clear any previous pixmap
 
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        self.current_frame_index = 0
-
-        progress_scale.config(to=self.total_frames if self.total_frames else 1)
-        progress_scale.set(0)
-
-        if self.cap:
-            total_time = format_time(self.total_frames, fps)
-            time_label.config(text=f"00:00 / {total_time}")
-        timeline_scroll_set(0.0)
-
-        # enable transport buttons
-        for btn in (play_btn, pause_btn, stop_btn, ff_btn, rew_btn, speed05_btn, speed1_btn, speed2_btn):
-            btn.config(state="normal")
-
-        self.play()
-
-    def play(self):
-        if self.cap is None or self.playing:
-            return
-        self.playing = True
-        self._schedule_next_frame()
-
-    def pause(self):
-        self.playing = False
-        if self._after_id is not None:
-            self.label.after_cancel(self._after_id)
-            self._after_id = None
-
-    def stop(self):
-        self.pause()
-        if self.cap:
-            self.cap.release()
-            self.cap = None
-        self._show_blank()
-        try:
-            progress_scale.set(0)
-        except tk.TclError:
-            pass
-        self.current_frame_index = 0
-        self.total_frames = 0
-        time_label.config(text="00:00 / 00:00")
-        timeline_scroll_set(0.0)
-        for btn in (play_btn, pause_btn, stop_btn, ff_btn, rew_btn, speed05_btn, speed1_btn, speed2_btn):
-            btn.config(state="disabled")
-
-    def seek(self, frame_index, show_frame=False):
-        if self.cap and 0 <= frame_index < self.total_frames:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            self.current_frame_index = frame_index
-            if show_frame:
-                ret, frame = self.cap.read()
-                if ret:
-                    self.current_frame_index = frame_index + 1
-                    self._display_frame(frame)
-                    if self.on_frame_callback:
-                        self.on_frame_callback(self.current_frame_index)
-
-    def set_speed(self, factor: float):
-        self.speed_factor = max(0.1, float(factor))
-
-    def _schedule_next_frame(self):
-        if not self.playing or self.cap is None:
-            return
-        delay = max(1, int(self.fps_delay / self.speed_factor))
-        self._after_id = self.label.after(delay, self._next_frame)
-
-    def _next_frame(self):
-        if not self.playing or self.cap is None:
-            return
-        ret, frame = self.cap.read()
-        if ret:
-            self.current_frame_index += 1
-            self._display_frame(frame)
-            if self.on_frame_callback:
-                self.on_frame_callback(self.current_frame_index)
-            self._schedule_next_frame()
+        # --- Play Video ---
+        video_path = txn[11]
+        if os.path.exists(video_path):
+            # Use dynamicCall to interact with the ActiveX WMPlayer control
+            self.player.dynamicCall('URL', video_path)
+            self.current_video_path = video_path
         else:
-            self.playing = False  # end of video
-
-    def _display_frame(self, frame_bgr):
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        frame_rgb = cv2.resize(rgb, (self.display_w, self.display_h), interpolation=cv2.INTER_AREA)
-        img = PILImage.fromarray(frame_rgb)
-        imgtk = ImageTk.PhotoImage(img)
-        self.label.imgtk = imgtk
-        self.label.config(image=imgtk)
-
-    def _show_blank(self):
-        blank = PILImage.new('RGB', (self.display_w, self.display_h), color='black')
-        imgtk = ImageTk.PhotoImage(blank)
-        self.label.imgtk = imgtk
-        self.label.config(image=imgtk)
-
-# -----------------------------------------------------------------------------
-# GLOBAL STATE PLACEHOLDERS (widgets assigned later)
-# -----------------------------------------------------------------------------
-player = None
-selected_video = None
-info_box = None
-progress_scale = None
-time_label = None
-timeline_scroll = None
-play_btn = pause_btn = stop_btn = ff_btn = rew_btn = speed05_btn = speed1_btn = speed2_btn = None
-date_combo = booth_combo = camera_combo = sort_combo = None
-video_count_label = None
-scroll_frame = None
-canvas = None
-
-updating_scale = False  # used to avoid recursive seek updates
-
-# -----------------------------------------------------------------------------
-# UI helper functions (use globals; defined before widgets are created)
-# -----------------------------------------------------------------------------
-def ui_seek_to_frame(frame_target, resume=True):
-    if not player or not player.cap or not player.total_frames:
-        return
-    frame_target = max(0, min(player.total_frames - 1, int(frame_target)))
-    was_playing = player.playing
-    player.pause()
-    player.seek(frame_target, show_frame=True)
-    if resume and was_playing:
-        player.play()
-
-def on_video_click(video_row):
-    """Populate info panel and load preview player."""
-    selected_video.set(video_row[IDX_FILEPATH])
-
-    # clear previous info
-    for w in info_box.winfo_children():
-        w.destroy()
-
-    # header
-    tk.Label(info_box, text="Selected Video", bg="white", font=("Arial", 11, "bold")).pack(anchor="w", padx=20, pady=(0,4))
-
-    # resolution & size (if file exists)
-    res_text = "Resolution: Unknown"
-    size_text = "Size: Unknown"
-    fp = video_row[IDX_FILEPATH]
-    if os.path.exists(fp):
-        cap = cv2.VideoCapture(fp)
-        if cap.isOpened():
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            res_text = f"Resolution: {width}x{height}"
-        cap.release()
-        size_text = f"Size: {os.path.getsize(fp)//1024} KB"
-
-    details = [
-        f"ID: {video_row[IDX_ID]}",
-        f"Title: {video_row[IDX_TITLE]}",
-        f"Timestamp: {video_row[IDX_TIMESTAMP]}",
-        f"Duration: {video_row[IDX_DURATION]}",
-        f"Booth: {video_row[IDX_BOOTH]}",
-        f"Camera: {video_row[IDX_CAMERA]}",
-        res_text,
-        size_text,
-        f"File: {fp}"
-    ]
-    for line in details:
-        tk.Label(info_box, text=line, bg="white", anchor="w", font=("Arial", 10)).pack(anchor="w", padx=20)
-
-    player.load(fp)
-
-def reset_filters():
-    date_combo.set("Any")
-    booth_combo.set("All")
-    camera_combo.set("Any")
-    apply_filters()
-
-def play_clicked():
-    player.play()
-
-def pause_clicked():
-    player.pause()
-
-def stop_clicked():
-    player.stop()
-
-def on_seek(val):
-    global updating_scale
-    if updating_scale:
-        return
-    if player.cap and player.total_frames:
-        frame_target = int(float(val))
-        ui_seek_to_frame(frame_target, resume=True)
-
-def seek_relative(seconds):
-    if not player.cap:
-        return
-    fps = player.cap.get(cv2.CAP_PROP_FPS) or 30
-    frame_jump = int(seconds * fps)
-    target_frame = player.current_frame_index + frame_jump
-    ui_seek_to_frame(target_frame, resume=True)
-
-def on_timeline_scroll(action, *args):
-    if not player.cap or not player.total_frames:
-        return
-    if action == 'moveto':
-        frac = float(args[0])
-        frame_target = int(frac * (player.total_frames - 1))
-    elif action == 'scroll':
-        count = int(args[0])
-        what = args[1]
-        step = 100 if what == 'pages' else 10
-        frame_target = player.current_frame_index + count * step
-    else:
-        return
-    ui_seek_to_frame(frame_target, resume=False)
-
-def timeline_scroll_set(frac):
-    # slider-length ~1%. We set lo=frac hi=frac+small
-    hi = min(frac + 0.01, 1.0)
-    timeline_scroll.set(frac, hi)
-
-# -----------------------------------------------------------------------------
-# Filtering helpers
-# -----------------------------------------------------------------------------
-def get_unique_date_strings(rows):
-    seen, out = set(), []
-    for r in rows:
-        date_part = r[IDX_TIMESTAMP].split(" ")[0] if r[IDX_TIMESTAMP] else ""
-        if date_part and date_part not in seen:
-            seen.add(date_part)
-            out.append(date_part)
-    return sorted(out, reverse=True)
-
-def get_unique_booths(rows):
-    return sorted({r[IDX_BOOTH] for r in rows})
-
-def get_unique_cameras(rows):
-    return sorted({r[IDX_CAMERA] for r in rows})
-
-def apply_filters(*_):
-    """Apply current filter combobox selections and re-render list."""
-    date_sel = date_combo.get()
-    booth_sel = booth_combo.get()
-    cam_sel = camera_combo.get()
-
-    filtered = []
-    for r in ALL_VIDEOS:
-        ok = True
-        if date_sel != "Any":
-            date_part = r[IDX_TIMESTAMP].split(" ")[0]
-            ok = ok and (date_part == date_sel)
-        if booth_sel != "All":
-            ok = ok and (r[IDX_BOOTH] == booth_sel)
-        if cam_sel != "Any":
-            ok = ok and (r[IDX_CAMERA] == cam_sel)
-        if ok:
-            filtered.append(r)
-
-    latest = (sort_combo.get() == "Latest First")
-    filtered = sort_videos(filtered, latest_first=latest)
-    render_video_grid(filtered)
-
-# -----------------------------------------------------------------------------
-# Accept / Reject / Play full handlers
-# -----------------------------------------------------------------------------
-def accept_video():
-    if selected_video.get():
-        messagebox.showinfo("Action", f"Video accepted: {selected_video.get()}")
-
-def reject_video():
-    if selected_video.get():
-        messagebox.showinfo("Action", f"Video rejected: {selected_video.get()}")
-
-def play_full():
-    if not selected_video.get():
-        return
-    fp = selected_video.get()
-    if os.name == 'nt':
-        os.startfile(fp)
-    elif os.name == 'posix':
-        os.system(f'open "{fp}"')  # macOS; adjust for Linux if needed
-    else:
-        messagebox.showinfo("Open", fp)
-
-# -----------------------------------------------------------------------------
-# Tk root
-# -----------------------------------------------------------------------------
-root = tk.Tk()
-root.title("Audit App Dashboard")
-root.geometry("1350x750")
-root.configure(bg="#f6f6f6")
-
-# theme
-if theme:
-    style = theme.setup_theme(root)
-else:
-    style = None
-
-# selected video path
-selected_video = tk.StringVar()
-
-# -----------------------------------------------------------------------------
-# FILTER / PLAYBACK PANEL (LEFT)
-# -----------------------------------------------------------------------------
-filter_frame = tk.Frame(root, bg="white", bd=1, relief="solid")
-filter_frame.place(x=20, y=20, width=270, height=720)
-
-# Heading
-if theme:
-    ttk.Label(filter_frame, text="Filters", style="AuditHeading.TLabel").pack(pady=10)
-else:
-    tk.Label(filter_frame, text="Filters", bg="white", font=("Arial", 12, "bold")).pack(pady=10)
-
-# Date filter
-tk.Label(filter_frame, text="Date", bg="white").pack(anchor="w", padx=10)
-date_combo = ttk.Combobox(filter_frame, values=["Any"], state="readonly")
-date_combo.pack(fill="x", padx=10)
-date_combo.set("Any")
-
-# Booth filter
-tk.Label(filter_frame, text="Booth", bg="white").pack(anchor="w", padx=10, pady=(10, 2))
-booth_combo = ttk.Combobox(filter_frame, values=["All"], state="readonly")
-booth_combo.pack(fill="x", padx=10)
-booth_combo.set("All")
-
-# Camera filter
-tk.Label(filter_frame, text="Camera ID", bg="white").pack(anchor="w", padx=10, pady=(10, 2))
-camera_combo = ttk.Combobox(filter_frame, values=["Any"], state="readonly")
-camera_combo.pack(fill="x", padx=10)
-camera_combo.set("Any")
-
-# Reset / Apply
-if theme:
-    ttk.Button(filter_frame, text="Reset", style="Audit.TButton", command=reset_filters).pack(pady=6)
-    ttk.Button(filter_frame, text="Apply", style="Audit.TButton", command=apply_filters).pack(pady=(0, 12))
-else:
-    tk.Button(filter_frame, text="Reset", bg="#e0e0e0", command=reset_filters).pack(pady=12)
-    tk.Button(filter_frame, text="Apply", bg="#d0ffd0", command=apply_filters).pack(pady=(0, 12))
-
-# Playback subheading
-if theme:
-    ttk.Label(filter_frame, text="Playback", style="AuditHeading.TLabel").pack()
-else:
-    tk.Label(filter_frame, text="Playback", bg="white", font=("Arial", 10, "bold")).pack()
-
-# Preview container
-preview_container = tk.Frame(filter_frame, bg="black", width=220, height=160)
-preview_container.pack(pady=8, padx=10)
-preview_container.pack_propagate(False)
-
-# instantiate player
-player = OpenCVEmbeddedPlayer(preview_container, display_size=(200, 120))
-
-# transport controls
-controls = tk.Frame(filter_frame, bg="white")
-controls.pack(pady=8)
-play_btn = tk.Button(controls, text="Play", width=6, command=play_clicked, state="disabled")
-pause_btn = tk.Button(controls, text="Pause", width=6, command=pause_clicked, state="disabled")
-stop_btn = tk.Button(controls, text="Stop", width=6, command=stop_clicked, state="disabled")
-play_btn.grid(row=0, column=0, padx=4, pady=3)
-pause_btn.grid(row=0, column=1, padx=4, pady=3)
-stop_btn.grid(row=0, column=2, padx=4, pady=3)
-
-rew_btn = tk.Button(controls, text="<<", width=6, command=lambda: seek_relative(-JUMP_SECONDS), state="disabled")
-ff_btn  = tk.Button(controls, text=">>", width=6, command=lambda: seek_relative(JUMP_SECONDS), state="disabled")
-rew_btn.grid(row=1, column=0, padx=4, pady=3)
-ff_btn.grid(row=1, column=2, padx=4, pady=3)
-
-speed05_btn = tk.Button(controls, text="0.5x", width=6, command=lambda: player.set_speed(0.5), state="disabled")
-speed1_btn  = tk.Button(controls, text="1x", width=6, command=lambda: player.set_speed(1.0), state="disabled")
-speed2_btn  = tk.Button(controls, text="2x", width=6, command=lambda: player.set_speed(2.0), state="disabled")
-speed05_btn.grid(row=2, column=0, padx=4, pady=3)
-speed1_btn.grid(row=2, column=1, padx=4, pady=3)
-speed2_btn.grid(row=2, column=2, padx=4, pady=3)
-
-# progress scale (seek slider)
-progress_scale = tk.Scale(
-    filter_frame,
-    from_=0, to=1,
-    orient="horizontal",
-    length=230,
-    bg="white",
-    highlightthickness=0,
-    sliderlength=15
-)
-progress_scale.pack(pady=5)
-
-def on_scale_release(event):
-    on_seek(progress_scale.get())
-progress_scale.bind("<ButtonRelease-1>", on_scale_release)
-
-# playback time label (00:00 / 00:00)
-time_label = tk.Label(filter_frame, text="00:00 / 00:00", bg="white", font=("Arial", 9))
-time_label.pack()
-
-# playback timeline scrollbar (alternative fine scrub)
-timeline_scroll = tk.Scrollbar(filter_frame, orient="horizontal", command=on_timeline_scroll)
-timeline_scroll.pack(fill="x", padx=10, pady=(4, 6))
-
-# -----------------------------------------------------------------------------
-# VIDEOS LIST PANEL (MIDDLE)
-# -----------------------------------------------------------------------------
-videos_frame = tk.Frame(root, bg="white", bd=1, relief="solid")
-videos_frame.place(x=310, y=20, width=600, height=700)
-
-video_count_label = tk.Label(videos_frame, text="Videos: 0", bg="white", font=("Arial", 10, "bold"))
-video_count_label.pack(anchor="w", padx=10, pady=5)
-
-sort_combo = ttk.Combobox(videos_frame, values=["Latest First", "Oldest First"], state="readonly")
-sort_combo.set("Latest First")
-sort_combo.pack(anchor="e", padx=10)
-
-# scrollable list container
-list_container = tk.Frame(videos_frame, bg="white")
-list_container.pack(fill="both", expand=True, padx=0, pady=0)
-
-canvas = tk.Canvas(list_container, bg="white", highlightthickness=0)
-canvas.pack(side="left", fill="both", expand=True)
-
-scrollbar = tk.Scrollbar(list_container, orient="vertical", command=canvas.yview)
-scrollbar.pack(side="right", fill="y")
-canvas.configure(yscrollcommand=scrollbar.set)
-
-# frame that holds each video row
-scroll_frame = tk.Frame(canvas, bg="white")
-canvas_window_id = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
-
-def _on_scroll_frame_config(event):
-    # match inner width to canvas width; update scrollregion
-    canvas.itemconfig(canvas_window_id, width=canvas.winfo_width())
-    canvas.configure(scrollregion=canvas.bbox("all"))
-scroll_frame.bind("<Configure>", _on_scroll_frame_config)
-
-# mousewheel support
-def _on_mousewheel_windows(event):
-    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-def _on_mousewheel_linux(event):
-    if event.num == 4:
-        canvas.yview_scroll(-1, "units")
-    elif event.num == 5:
-        canvas.yview_scroll(1, "units")
-canvas.bind_all("<MouseWheel>", _on_mousewheel_windows)  # Windows & often Mac
-canvas.bind_all("<Button-4>", _on_mousewheel_linux)      # Linux up
-canvas.bind_all("<Button-5>", _on_mousewheel_linux)      # Linux down
-
-# -----------------------------------------------------------------------------
-# VIDEO INFORMATION PANEL (RIGHT)
-# -----------------------------------------------------------------------------
-info_frame = tk.Frame(root, bg="white", bd=1, relief="solid")
-info_frame.place(x=930, y=20, width=380, height=700)
-
-if theme:
-    ttk.Label(info_frame, text="Video Information", style="AuditHeading.TLabel").pack(pady=10)
-else:
-    tk.Label(info_frame, text="Video Information", bg="white", font=("Arial", 12, "bold")).pack(pady=10)
-
-info_box = tk.Frame(info_frame, bg="white")
-info_box.pack(fill="both", expand=True, padx=10, pady=5)
-
-action_frame = tk.Frame(info_frame, bg="white")
-action_frame.pack(pady=10)
-
-if theme:
-    ttk.Button(action_frame, text="Accept", style="Positive.TButton", width=8, command=accept_video).pack(side="left", padx=5)
-    ttk.Button(action_frame, text="Reject", style="Negative.TButton", width=8, command=reject_video).pack(side="left", padx=5)
-    ttk.Button(action_frame, text="Play Full", style="Primary.TButton", width=10, command=play_full).pack(side="left", padx=5)
-else:
-    tk.Button(action_frame, text="Accept", bg="#4CAF50", fg="white", width=8, command=accept_video).pack(side="left", padx=5)
-    tk.Button(action_frame, text="Reject", bg="#F44336", fg="white", width=8, command=reject_video).pack(side="left", padx=5)
-    tk.Button(action_frame, text="Play Full", bg="#2196F3", fg="white", width=10, command=play_full).pack(side="left", padx=5)
-
-# -----------------------------------------------------------------------------
-# LOAD DATA, POPULATE FILTERS, RENDER
-# -----------------------------------------------------------------------------
-ALL_VIDEOS = load_video_data()
-
-# fill combobox choices from data
-date_combo["values"]   = ["Any"] + get_unique_date_strings(ALL_VIDEOS)
-booth_combo["values"]  = ["All"] + get_unique_booths(ALL_VIDEOS)
-camera_combo["values"] = ["Any"] + get_unique_cameras(ALL_VIDEOS)
-
-# bind filters *after* apply_filters defined
-date_combo.bind("<<ComboboxSelected>>", apply_filters)
-booth_combo.bind("<<ComboboxSelected>>", apply_filters)
-camera_combo.bind("<<ComboboxSelected>>", apply_filters)
-sort_combo.bind("<<ComboboxSelected>>", apply_filters)
-
-# -----------------------------------------------------------------------------
-# Render list
-# -----------------------------------------------------------------------------
-def render_video_grid(video_list):
-    """Render list of videos into scroll_frame."""
-    # Clear
-    for widget in scroll_frame.winfo_children():
-        widget.destroy()
-
-    video_count_label.config(text=f"Videos: {len(video_list)}")
-
-    for vid in video_list:
-        row_frame = tk.Frame(scroll_frame, bg="white", bd=1, relief="solid")
-        row_frame.pack(fill="x", pady=4, padx=4)
-
-        # thumbnail
-        thumb_img = load_thumbnail(vid[IDX_THUMB])
-        lbl_img = tk.Label(row_frame, image=thumb_img, bg="white")
-        lbl_img.image = thumb_img  # keep ref
-        lbl_img.pack(side="left", padx=5, pady=5)
-
-        # text info
-        text_frame = tk.Frame(row_frame, bg="white")
-        text_frame.pack(side="left", fill="both", expand=True)
-
-        title_full = vid[IDX_TITLE]
-        title_short = title_full if len(title_full) <= 20 else title_full[:20] + "..."
-        lbl_title = tk.Label(text_frame, text=title_short, bg="white", anchor="w", font=("Arial", 10, "bold"))
-        lbl_title.pack(fill="x", padx=5)
-
-        # hover show full title
-        def _enter_factory(lbl, t=title_full):
-            return lambda e: lbl.config(text=t)
-        def _leave_factory(lbl, t=title_short):
-            return lambda e: lbl.config(text=t)
-        lbl_title.bind("<Enter>", _enter_factory(lbl_title))
-        lbl_title.bind("<Leave>", _leave_factory(lbl_title))
-
-        tk.Label(text_frame, text=vid[IDX_TIMESTAMP], bg="white", anchor="w", font=("Arial", 9)).pack(fill="x", padx=5)
-
-        # select button
-        if theme:
-            ttk.Button(row_frame, text="Select", style="Audit.TButton",
-                       command=lambda v=vid: on_video_click(v)).pack(side="right", padx=5, pady=5)
-        else:
-            tk.Button(row_frame, text="Select", bg="#e0e0e0",
-                      command=lambda v=vid: on_video_click(v)).pack(side="right", padx=5, pady=5)
-
-    # update scroll region
-    canvas.update_idletasks()
-    canvas.configure(scrollregion=canvas.bbox("all"))
-
-# initial render
-apply_filters()
-
-# -----------------------------------------------------------------------------
-# Player progress update callback
-# -----------------------------------------------------------------------------
-def update_progress(frame_index):
-    """Called by player each frame to sync slider / label / mini-scrollbar."""
-    global updating_scale
-    if player.cap is None:
-        return
-    try:
-        updating_scale = True
-        progress_scale.set(frame_index)
-        fps = player.cap.get(cv2.CAP_PROP_FPS) or 30
-        current_time = format_time(frame_index, fps)
-        total_time = format_time(player.total_frames, fps)
-        time_label.config(text=f"{current_time} / {total_time}")
-        frac = frame_index / float(player.total_frames) if player.total_frames else 0.0
-        timeline_scroll_set(frac)
-    finally:
-        updating_scale = False
-
-player.on_frame_callback = update_progress
-
-# -----------------------------------------------------------------------------
-# Optional button hover visual (if theme)
-# -----------------------------------------------------------------------------
-if theme:
-    theme.attach_hover(play_btn,    theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(pause_btn,   theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(stop_btn,    theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(ff_btn,      theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(rew_btn,     theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(speed05_btn, theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(speed1_btn,  theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-    theme.attach_hover(speed2_btn,  theme.BTN_GRAY, theme.BTN_GRAY_HOVER)
-
-# -----------------------------------------------------------------------------
-# Mainloop
-# -----------------------------------------------------------------------------
-root.mainloop()
+            QMessageBox.warning(self, "Video Not Found", f"Video not found:\n{video_path}")
+            self.current_video_path = None # Reset current video path
+
+    def refresh_table(self):
+        """
+        Resets all filter inputs, repopulates the transaction table with all data,
+        clears the info box and image displays, and stops video playback.
+        """
+        # Clear all filter input fields in the left panel
+        for entry in self.filter_entries.values():
+            entry.clear()
+        # Clear the specific filter inputs in the center panel
+        self.tran_id_input.clear()
+        self.veh_reg_input.clear()
+
+        self.populate_transaction_table() # Repopulate table with original, unfiltered data
+
+        # Reset info box and image labels to their default states
+        self.info_box.setText("Select a transaction to see details")
+        self.lp_image_label.clear()
+        self.lp_image_label.setText("LP Image")
+        self.all_image_label.clear()
+        self.all_image_label.setText("All Images")
+
+        # Stop video playback if a video is currently loaded
+        if self.current_video_path:
+            self.player.dynamicCall('controls.stop')
+        self.current_video_path = None
+
+    def apply_filters(self):
+        """
+        This method is a placeholder for implementing actual data filtering logic.
+        It retrieves the current values from the Transaction ID and Vehicle Reg No inputs.
+        """
+        tran_id = self.tran_id_input.text()
+        veh_reg_no = self.veh_reg_input.text()
+
+        # For demonstration, show a message box with the current filter values
+        QMessageBox.information(self, "Apply Filters",
+                                f"Applying filters:\nTransaction ID: '{tran_id}'\nVehicle Reg No: '{veh_reg_no}'\n"
+                                "Implement actual filtering logic here to update the table.")
+        # TODO: Implement actual filtering logic here.
+        # This would typically involve:
+        # 1. Filtering `transaction_data` based on `tran_id` and `veh_reg_no`.
+        # 2. Updating `self.table.setRowCount()` and then populating the table
+        #    with the `filtered_data`.
+
+    def audit_button_clicked(self, action_name):
+        """
+        Generic handler for all audit action buttons.
+        Displays a message box indicating which button was clicked.
+        """
+        QMessageBox.information(self, "Audit Action",
+                                 f"Button '{action_name}' clicked.\nImplement audit logic here.")
+
+
+# --- Main Application Entry Point ---
+if __name__ == "__main__":
+    # Create the QApplication instance
+    app = QApplication(sys.argv)
+    # Create an instance of the AuditApp main window
+    audit_app = AuditApp()
+    # Show the main window
+    audit_app.show()
+    # Start the Qt event loop and exit the application when it finishes
+    sys.exit(app.exec_())
