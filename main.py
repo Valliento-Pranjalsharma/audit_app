@@ -357,11 +357,20 @@ class AuditApp(QMainWindow):
             "IAVC Audit", "Operator Correct", "AVC Correct", "Auditor Correct"
         ]
         # Text color of buttons is already set to white for better visibility
-        btn_style = (
-            "background-color: #505050; color: white; padding: 10px; font-weight: bold;"
-            "border-radius: 6px; margin-top: 7px;"
-            "QPushButton:hover { background-color: #606060; }" # Add a hover effect for buttons
-        )
+        btn_style = """
+            QPushButton {
+            background-color: #505050;
+            color: white;
+            padding: 10px;
+            font-weight: bold;
+            border-radius: 6px;
+            margin-top: 7px;
+                        }
+            QPushButton:hover {
+            background-color: #686868;  /* Lighter shade on hover */
+                        }
+                    """
+
         for txt in audit_buttons:
             btn = QPushButton(txt)
             btn.setStyleSheet(btn_style)
