@@ -1,180 +1,155 @@
 import sys
 import os
+import mysql.connector
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QLabel, QPushButton, QVBoxLayout,
     QHBoxLayout, QFrame, QTableWidget, QTableWidgetItem, QLineEdit,
     QSizePolicy, QMessageBox, QSplitter, QWidget, QStyle, QToolButton, QHeaderView,
-    QScrollArea
+    QComboBox, QDateEdit, QFileDialog
 )
 from PyQt5.QAxContainer import QAxWidget
-from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import Qt, QSize, QDate
+from PyQt5.QtGui import QPixmap, QIcon, QTextDocument
+from PyQt5.QtPrintSupport import QPrinter
 
+def get_transaction_data():
+    """
+    Connects to the MySQL database, fetches all data from audit_table,
+    and returns it as a list of tuples.
+    Returns an empty list and prints an error if the connection fails.
+    """
+    try:
+        mydb = mysql.connector.connect(
+            host="localhost",
+            user="root",
+            password="Pranjal@283203",
+            database="audit_app_db"
+        )
+        mycursor = mydb.cursor()
+        mycursor.execute("SELECT * FROM audit_table")
+        results = mycursor.fetchall()
+        mycursor.close()
+        mydb.close()
+        return results        
+    except mysql.connector.Error as err:
+        print(f"Error connecting to MySQL: {err}")
+        return []
 
-# --- Sample Transaction Data ---
-# This list holds the data for the audit transactions.
-# Each tuple represents a single transaction with various details.
-# The structure is:
-# (ID, Timestamp, TC Class, AVC, Amount/Duration, VehRegNo, Payment Mode,
-#  Vehicle Class, Booth, Camera, Title, Video Path, LP Image Path, All Images Path)
-transaction_data = [
-    (1, "2024-07-19 11:20", "A1", "Audit Footage 12", "$00:25", "XYZ-123",
-     "Cash", "Car", "A1", "001", "Audit Footage 12",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video12.mp4",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png"),
-    (2, "2024-07-19 11:10", "A1", "Audit Footage 13", "$00:30", "XYZ-124",
-     "Card", "Truck", "A1", "002", "Audit Footage 13",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video13.mp4",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb13.png",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb13.png"),
-    (3, "2024-07-19 11:00", "A2", "Audit Footage 14", "$00:35", "XYZ-125",
-     "Pass", "Bike", "A2", "003", "Audit Footage 14",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video14.mp4",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb14.png",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb14.png"),
-    (4, "2024-07-19 10:50", "A3", "Audit Footage 15", "$00:40", "XYZ-126",
-     "Cash", "Car", "A3", "004", "Audit Footage 15",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video15.mp4",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb15.png",
-     r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb15.png"),
-]
-
-# Populate additional sample data for demonstration purposes
-for i in range(5, 40):
-    transaction_data.append((
-        i,
-        f"2024-07-19 10:{50 - (i % 60):02d}", # Timestamp
-        f"A{i%5 + 1}", # TC Class
-        f"Audit Footage {10 + i}", # AVC
-        f"${20 + i}", # Amount / Duration (re-used for both in this example)
-        f"XYZ-{100 + i}", # VehRegNo
-        "Cash" if i % 3 == 0 else "Card", # Payment Mode
-        ["Car", "Truck", "Bike", "Bus", "Van"][i % 5], # Vehicle Class
-        f"A{i%5 + 1}", # Booth
-        f"00{i:03d}", # Camera (original txn[9] is 001, 002 etc)
-        f"Audit Footage {10 + i}", # Title (original txn[10] is Audit Footage)
-        r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\videos\video12.mp4", # Sample Video Path
-        r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png", # Sample LP Image Path
-        r"C:\Users\ASUS\OneDrive\Desktop\audit_app\audit_app\thumbnails\thumb12.png" # Sample All Images Path
-    ))
-
+# Fetch data from the database initially
+transaction_data = get_transaction_data()
 
 class AuditApp(QMainWindow):
-    """
-    Main application window for the Audit App.
-    It provides a UI for viewing transaction data, playing associated videos,
-    displaying images, and performing audit actions.
-    """
     def __init__(self):
-        """
-        Initializes the AuditApp window, sets up the main layout,
-        and calls methods to create the left, center, and right panels.
-        """
         super().__init__()
         self.setWindowTitle("Audit App with Embedded Windows Media Player")
-        self.setGeometry(150, 80, 1600, 900) # Set initial window position and size
-
-        self.current_video_path = None # Stores the path of the currently playing video
-
-        # Create a QSplitter to allow resizing of panels horizontally
+        self.setGeometry(150, 80, 1600, 900)
+        self.current_video_path = None
         self.main_splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(self.main_splitter) # Set the splitter as the central widget
+        self.setCentralWidget(self.main_splitter)
 
-        # Call methods to create and add each panel to the splitter
         self.create_left_panel()
         self.create_center_panel()
         self.create_right_panel()
+        self.populate_filter_comboboxes()
 
     def create_left_panel(self):
-        """
-        Creates the left panel of the application, containing filter inputs,
-        Refresh/Done buttons, and an embedded Windows Media Player.
-        """
         self.left_panel = QFrame()
-        self.left_panel.setStyleSheet("background-color: #232629;") # Dark background
-        self.left_panel.setMinimumWidth(350) # Set a minimum width for the panel
-        self.left_layout = QVBoxLayout(self.left_panel) # Vertical layout for the left panel
-        self.left_layout.setContentsMargins(12, 12, 12, 12) # Padding around content
-        self.left_layout.setSpacing(15) # Spacing between widgets
+        self.left_panel.setStyleSheet("background-color: #232629;")
+        self.left_panel.setMinimumWidth(350)
+        self.left_layout = QVBoxLayout(self.left_panel)
+        self.left_layout.setContentsMargins(12, 12, 12, 12)
+        self.left_layout.setSpacing(15)
 
-        # --- Filter Section ---
         self.filters_frame = QFrame()
         self.filters_layout = QVBoxLayout(self.filters_frame)
         self.filters_layout.setSpacing(10)
-        filter_labels = [
-            "Lane:", "Shift:", "User:", "Vehicle Class:", "Exempt Class:",
-            "Payment Mode:", "Pass Type:", "Tran Filter:", "Start Date:", "End Date:"
-        ]
-        self.filter_entries = {} # Dictionary to store QLineEdit widgets for filters
-        for label in filter_labels:
+        
+        filter_labels_and_db_columns = {
+            "Lane:": 12, "Shift:": 13, "User:": 14, "Vehicle Class:": 7,
+            "Exempt Class:": 15, "Payment Mode:": 6, "Pass Type:": 16,
+        }
+        self.filter_comboboxes = {}
+        for label, _ in filter_labels_and_db_columns.items():
             lbl = QLabel(label)
             lbl.setStyleSheet("color: white; font-weight: bold; font-size: 11pt;")
-            edit = QLineEdit()
-            edit.setStyleSheet("background-color: #2e3237; color: white; border-radius: 3px; padding: 6px;")
+            combo = QComboBox()
+            combo.setStyleSheet("background-color: #2e3237; color: white; border-radius: 3px; padding: 6px;")
             self.filters_layout.addWidget(lbl)
-            self.filters_layout.addWidget(edit)
-            self.filter_entries[label] = edit # Store the QLineEdit for later access
-        self.left_layout.addWidget(self.filters_frame)
+            self.filters_layout.addWidget(combo)
+            self.filter_comboboxes[label] = combo
 
-        # --- Buttons Section (Refresh and Done) ---
-        btn_frame = QHBoxLayout() # Horizontal layout for buttons
+        date_filter_labels = ["Start Date:", "End Date:"]
+        self.date_filters = {}
+        for label in date_filter_labels:
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: white; font-weight: bold; font-size: 11pt;")
+            date_edit = QDateEdit()
+            date_edit.setCalendarPopup(True)
+            date_edit.setStyleSheet("background-color: #2e3237; color: white; border-radius: 3px; padding: 6px;")
+            date_edit.setDate(QDate.currentDate())
+            self.filters_layout.addWidget(lbl)
+            self.filters_layout.addWidget(date_edit)
+            self.date_filters[label] = date_edit
+            
+        self.left_layout.addWidget(self.filters_frame)
+        
+        btn_frame = QHBoxLayout()
+        # Refresh button
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setStyleSheet(
             "background-color: #303841; color: white; padding: 8px; font-weight: bold; border-radius: 5px;"
         )
-        refresh_btn.clicked.connect(self.refresh_table) # Connect refresh button to method
+        refresh_btn.clicked.connect(self.refresh_table)
+        # Done button
         done_btn = QPushButton("Done")
         done_btn.setStyleSheet(
             "background-color: #218c54; color: white; padding: 8px; font-weight: bold; border-radius: 5px;"
         )
+        done_btn.clicked.connect(self.done_button_logic)
         btn_frame.addWidget(refresh_btn)
         btn_frame.addWidget(done_btn)
         self.left_layout.addLayout(btn_frame)
 
-        # --- Video Player Section ---
         video_label = QLabel("Video Player")
         video_label.setStyleSheet("color: white; font-size: 16pt; font-weight: bold; margin-top: 20px;")
         self.left_layout.addWidget(video_label)
 
         self.video_frame = QFrame()
         self.video_frame.setStyleSheet("background-color: black; border-radius: 6px;")
-        self.video_frame.setFixedSize(400, 225) # Fixed size for the video player frame
+        self.video_frame.setFixedSize(400, 225)
         self.video_layout = QVBoxLayout(self.video_frame)
-        self.video_layout.setContentsMargins(0, 0, 0, 0) # No padding for the video player
+        self.video_layout.setContentsMargins(0, 0, 0, 0)
 
-        # QAxWidget is used to embed ActiveX controls, specifically Windows Media Player (WMPlayer.OCX)
         self.player = QAxWidget("WMPlayer.OCX")
-        self.player.setProperty("uiMode", "full") # Display full UI controls
-        self.player.setProperty("stretchToFit", True) # Stretch video to fit control size
-        self.player.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding) # Allow player to expand
+        self.player.setProperty("uiMode", "full")
+        self.player.setProperty("stretchToFit", True)
+        self.player.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_layout.addWidget(self.player)
-        self.left_layout.addWidget(self.video_frame, alignment=Qt.AlignHCenter) # Center the video frame
-        self.main_splitter.addWidget(self.left_panel) # Add the left panel to the main splitter
+        self.left_layout.addWidget(self.video_frame, alignment=Qt.AlignHCenter)
+        self.main_splitter.addWidget(self.left_panel)
+
+    def done_button_logic(self):
+        """
+        This function will get called when 'Done' is clicked.
+        Customize the logic as needed.
+        """
+        filled_filters = {k: v.currentText() for k, v in self.filter_comboboxes.items() if v.currentText()}
+        comment = self.comment_edit.text() if hasattr(self, "comment_edit") else ""
+        QMessageBox.information(self, "Done", f"Filters: {filled_filters}\nComment: {comment}\n\n(Implement your logic here)")
 
     def create_center_panel(self):
-        """
-        Creates the central panel of the application, which includes:
-        - Input fields for Transaction ID and Vehicle Registration Number.
-        - Buttons for Get, Export as PDF, and Export to Excel.
-        - A QTableWidget to display transaction data.
-        - Labels to display LP (License Plate) and All Images.
-        """
         self.center_panel = QFrame()
-        # Set white background for the main center panel for a clean look
         self.center_panel.setStyleSheet("background-color: white; border-radius: 8px;")
-        self.center_layout = QVBoxLayout(self.center_panel) # Vertical layout for the center panel
-        self.center_layout.setContentsMargins(12, 12, 12, 12) # Padding around content
-        self.center_layout.setSpacing(12) # Spacing between widgets
+        self.center_layout = QVBoxLayout(self.center_panel)
+        self.center_layout.setContentsMargins(12, 12, 12, 12)
+        self.center_layout.setSpacing(12)
 
-        # --- Top Header Panel (Filter/Export Controls) ---
         header_panel = QFrame()
         header_panel.setStyleSheet("background-color: #f0f0f0; border-radius: 5px; padding: 10px;")
-        header_layout = QHBoxLayout(header_panel) # Horizontal layout for header controls
+        header_layout = QHBoxLayout(header_panel)
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(15)
 
-        # Transaction ID input
         tran_id_label = QLabel("Tran Id:")
         tran_id_label.setStyleSheet("color: #333; font-weight: bold; font-size: 14px;")
         self.tran_id_input = QLineEdit()
@@ -182,7 +157,6 @@ class AuditApp(QMainWindow):
         self.tran_id_input.setFixedWidth(120)
         self.tran_id_input.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc; border-radius: 3px; padding: 5px;")
 
-        # Vehicle Registration Number input
         veh_reg_label = QLabel("Veh Reg No:")
         veh_reg_label.setStyleSheet("color: #333; font-weight: bold; font-size: 14px;")
         self.veh_reg_input = QLineEdit()
@@ -190,27 +164,27 @@ class AuditApp(QMainWindow):
         self.veh_reg_input.setFixedWidth(120)
         self.veh_reg_input.setStyleSheet("background-color: white; color: black; border: 1px solid #ccc; border-radius: 3px; padding: 5px;")
 
-        # Get Button
         get_btn = QPushButton("Get")
         get_btn.setFixedWidth(60)
         get_btn.setStyleSheet("background-color: #007bff; color: white; padding: 6px 12px; border-radius: 5px; font-weight: bold;")
-        get_btn.clicked.connect(self.apply_filters) # Connect to the filter application method
+        get_btn.clicked.connect(self.apply_filters)
 
-        # Export as PDF Button
         export_pdf_btn = QPushButton("Export as PDF")
-        export_pdf_btn.setFixedWidth(100)
+        export_pdf_btn.setFixedWidth(110)
         export_pdf_btn.setStyleSheet("background-color: #28a745; color: white; padding: 6px 12px; border-radius: 5px; font-weight: bold;")
-        # TODO: Add PDF export logic here when implemented
+        # Set icon for Export as PDF button (built-in file save icon used as example)
+        export_pdf_icon = self.style().standardIcon(QStyle.SP_DialogSaveButton)
+        export_pdf_btn.setIcon(export_pdf_icon)
+        export_pdf_btn.setIconSize(QSize(16,16))
+        export_pdf_btn.clicked.connect(self.export_pdf)
 
-        # Export to Excel Button (QToolButton for icon)
         excel_btn = QToolButton()
-        excel_btn.setIcon(self.style().standardIcon(QStyle.SP_DriveHDIcon)) # Standard icon for hard drive/export
+        excel_btn.setIcon(self.style().standardIcon(QStyle.SP_DriveHDIcon))
         excel_btn.setIconSize(QSize(24, 24))
         excel_btn.setToolTip("Export to Excel")
         excel_btn.setStyleSheet("background-color: #ffc107; border-radius: 5px; padding: 5px;")
-        # TODO: Add Excel export logic here when implemented
+        # You can implement Excel export later and connect excel_btn.clicked
 
-        # Add widgets to the header layout
         header_layout.addWidget(tran_id_label)
         header_layout.addWidget(self.tran_id_input)
         header_layout.addWidget(veh_reg_label)
@@ -218,50 +192,58 @@ class AuditApp(QMainWindow):
         header_layout.addWidget(get_btn)
         header_layout.addWidget(export_pdf_btn)
         header_layout.addWidget(excel_btn)
-        header_layout.addStretch() # Pushes all widgets to the left
+        header_layout.addStretch()
 
-        self.center_layout.addWidget(header_panel) # Add the header panel to the center layout
+        self.center_layout.addWidget(header_panel)
 
-        # --- Transaction Table Section ---
         self.table = QTableWidget()
         self.table.setRowCount(len(transaction_data))
-        self.table.setColumnCount(11) # Define 11 columns for the table
+        self.table.setColumnCount(14)
         headers = [
             "Time", "TC Class", "AVC", "Amount", "VehRegNo", "Payment Mode",
-            "Vehicle Class", "Booth", "Camera", "Title", "Duration"
+            "Vehicle Class", "Booth", "Camera", "Title", "Duration",
+            "LP Image Path", "All Image Path", "Video Path"
         ]
-        self.table.setHorizontalHeaderLabels(headers) # Set column headers
-        self.table.setSelectionBehavior(self.table.SelectRows) # Select entire row on click
-        self.table.setEditTriggers(self.table.NoEditTriggers) # Make table read-only
-        self.table.verticalHeader().setVisible(False) # Hide row numbers
+        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QTableWidget.ScrollPerPixel)
 
-        # Apply enhanced table styling for a modern look
+        header = self.table.horizontalHeader()
+        for col in range(self.table.columnCount() - 1):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(self.table.columnCount() - 1, QHeaderView.Stretch)
+
         self.table.setStyleSheet("""
             QTableWidget {
                 background-color: white;
-                color: #333; /* Darker text for better contrast */
-                gridline-color: #e0e0e0; /* Lighter gridlines */
+                color: #333;
+                gridline-color: #e0e0e0;
                 font-size: 11pt;
-                font-family: 'Segoe UI', Arial, sans-serif; /* Modern, clean font */
-                border: 1px solid #ddd; /* Subtle border around table */
+                font-family: 'Segoe UI', Arial, sans-serif;
+                border: 1px solid #ddd;
                 border-radius: 5px;
             }
             QHeaderView::section {
-                background-color: #f8f8f8; /* Light header background */
+                background-color: #f8f8f8;
                 color: #333;
-                padding: 8px; /* More padding for headers */
+                padding: 8px;
                 border: 1px solid #e0e0e0;
                 font-weight: bold;
                 font-size: 10pt;
             }
             QTableWidget::item {
-                padding: 5px; /* Padding for table cells */
+                padding: 5px;
             }
             QTableWidget::item:selected {
-                background-color: #cceeff; /* Lighter blue for selection highlight */
+                background-color: #cceeff;
                 color: #333;
             }
-            /* Custom scroll bar styling for a cleaner look */
+            QTableWidget::item:hover {
+                background-color: #e6f7ff;
+            }
             QScrollBar:vertical {
                 border: none;
                 background: #f0f0f0;
@@ -274,75 +256,74 @@ class AuditApp(QMainWindow):
                 border-radius: 5px;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px; /* Hide default scroll bar buttons */
+                height: 0px;
+                border: none;
+            }
+            QScrollBar:horizontal {
+                border: none;
+                background: #f0f0f0;
+                height: 10px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #c0c0c0;
+                min-width: 20px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+                border: none;
             }
         """)
 
-        # Stretch columns to fill the available space horizontally
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.cellClicked.connect(self.on_table_row_selected)
+        self.populate_transaction_table(transaction_data)
+        self.center_layout.addWidget(self.table)
 
-        # Ensure scroll bars are always visible if content overflows
-        self.table.setHorizontalScrollMode(self.table.ScrollPerPixel)
-        self.table.setVerticalScrollMode(self.table.ScrollPerPixel)
-        self.table.cellClicked.connect(self.on_table_row_selected) # Connect cell click to handler
-        self.populate_transaction_table() # Populate the table with initial data
-        self.center_layout.addWidget(self.table) # Add the table to the center layout
-
-        # --- Images Section (LP Image and All Images) ---
         self.images_frame = QFrame()
         self.images_frame.setStyleSheet("background-color: #f0f0f0; border-radius: 5px; padding: 10px;")
-        images_layout = QHBoxLayout(self.images_frame) # Horizontal layout for images
+        images_layout = QHBoxLayout(self.images_frame)
         images_layout.setContentsMargins(0, 0, 0, 0)
-        images_layout.setSpacing(15) # Increased spacing for better visual separation
+        images_layout.setSpacing(15)
 
-        # LP (License Plate) Image Label
         self.lp_image_label = QLabel("LP Image")
         self.lp_image_label.setStyleSheet(
             "background-color: white; color: #555; font-size: 12pt; border-radius: 6px; border: 1px dashed #ccc;"
         )
-        self.lp_image_label.setFixedSize(320, 180) # Fixed size for consistency
-        self.lp_image_label.setAlignment(Qt.AlignCenter) # Center text/image
-        self.lp_image_label.setScaledContents(True) # Scale pixmap to fit label
+        self.lp_image_label.setFixedSize(320, 180)
+        self.lp_image_label.setAlignment(Qt.AlignCenter)
+        self.lp_image_label.setScaledContents(True)
         images_layout.addWidget(self.lp_image_label)
 
-        # All Images Label
         self.all_image_label = QLabel("All Images")
         self.all_image_label.setStyleSheet(
             "background-color: white; color: #555; font-size: 12pt; border-radius: 6px; border: 1px dashed #ccc;"
         )
-        self.all_image_label.setFixedSize(320, 180) # Fixed size for consistency
+        self.all_image_label.setFixedSize(320, 180)
         self.all_image_label.setAlignment(Qt.AlignCenter)
         self.all_image_label.setScaledContents(True)
         images_layout.addWidget(self.all_image_label)
 
-        images_layout.addStretch() # Pushes images to the left
-
-        self.center_layout.addWidget(self.images_frame) # Add the images frame to the center layout
-        self.main_splitter.addWidget(self.center_panel) # Add the center panel to the main splitter
+        images_layout.addStretch()
+        self.center_layout.addWidget(self.images_frame)
+        self.main_splitter.addWidget(self.center_panel)
 
     def create_right_panel(self):
-        """
-        Creates the right panel of the application, displaying transaction details,
-        an audit comment input, and various audit action buttons.
-        """
         self.right_panel = QFrame()
-        self.right_panel.setStyleSheet("background-color: #383838; border-radius: 8px;") # Dark gray background
-        self.right_panel.setMinimumWidth(320) # Set a minimum width for the panel
-        self.right_layout = QVBoxLayout(self.right_panel) # Vertical layout for the right panel
-        self.right_layout.setContentsMargins(12, 12, 12, 12) # Padding around content
-        self.right_layout.setSpacing(15) # Spacing between widgets
+        self.right_panel.setStyleSheet("background-color: #383838; border-radius: 8px;")
+        self.right_panel.setMinimumWidth(320)
+        self.right_layout = QVBoxLayout(self.right_panel)
+        self.right_layout.setContentsMargins(12, 12, 12, 12)
+        self.right_layout.setSpacing(15)
 
-        # --- Transaction Details Info Box ---
         self.info_box = QLabel("Select a transaction to see details")
         self.info_box.setStyleSheet(
             "background-color: white; padding: 12px; font-size: 12pt; border-radius: 6px; color: #333;")
-        self.info_box.setWordWrap(True) # Allow text to wrap within the label
-        self.info_box.setMinimumHeight(280) # Set a minimum height for the info box
+        self.info_box.setWordWrap(True)
+        self.info_box.setMinimumHeight(280)
         self.right_layout.addWidget(self.info_box)
 
-        # --- Audit Comment Section ---
         comment_lbl = QLabel("Audit Comment:")
-        # Text color is already set to white for better visibility on dark background
         comment_lbl.setStyleSheet("color: white; font-weight: bold; font-size: 11pt;")
         self.right_layout.addWidget(comment_lbl)
 
@@ -351,12 +332,10 @@ class AuditApp(QMainWindow):
             "background-color: #505050; color: white; padding: 8px; border-radius: 5px;")
         self.right_layout.addWidget(self.comment_edit)
 
-        # --- Audit Action Buttons ---
         audit_buttons = [
             "Edit Transaction", "Cancel Transaction", "ETC Audit",
             "IAVC Audit", "Operator Correct", "AVC Correct", "Auditor Correct"
         ]
-        # Text color of buttons is already set to white for better visibility
         btn_style = """
             QPushButton {
             background-color: #505050;
@@ -367,151 +346,240 @@ class AuditApp(QMainWindow):
             margin-top: 7px;
                         }
             QPushButton:hover {
-            background-color: #686868;  /* Lighter shade on hover */
+            background-color: #686868;
                         }
                     """
 
         for txt in audit_buttons:
             btn = QPushButton(txt)
             btn.setStyleSheet(btn_style)
-            # Connect each button to the audit_button_clicked method, passing its text
             btn.clicked.connect(lambda checked, t=txt: self.audit_button_clicked(t))
             self.right_layout.addWidget(btn)
 
-        self.right_layout.addStretch() # Pushes all widgets to the top
-        self.main_splitter.addWidget(self.right_panel) # Add the right panel to the main splitter
+        self.right_layout.addStretch()
+        self.main_splitter.addWidget(self.right_panel)
 
-    def populate_transaction_table(self):
-        """
-        Populates the QTableWidget with data from the `transaction_data` list.
-        Clears existing rows before adding new ones.
-        """
-        self.table.setRowCount(0) # Clear existing rows to prevent duplicates on refresh
-        self.table.setRowCount(len(transaction_data)) # Set the number of rows based on data length
+    def populate_filter_comboboxes(self):
+        filter_map = {
+            "Lane:": 12, "Shift:": 13, "User:": 14, "Vehicle Class:": 7,
+            "Exempt Class:": 15, "Payment Mode:": 6, "Pass Type:": 16,
+        }
 
-        for row_idx, txn in enumerate(transaction_data):
-            # Populate each cell with the corresponding data from the transaction tuple
-            self.table.setItem(row_idx, 0, QTableWidgetItem(txn[1]))   # Time (txn[1])
-            self.table.setItem(row_idx, 1, QTableWidgetItem(txn[2]))   # TC Class (txn[2])
-            self.table.setItem(row_idx, 2, QTableWidgetItem(txn[3]))   # AVC (txn[3])
-            self.table.setItem(row_idx, 3, QTableWidgetItem(txn[4]))   # Amount (txn[4])
-            self.table.setItem(row_idx, 4, QTableWidgetItem(txn[5]))   # VehRegNo (txn[5])
-            self.table.setItem(row_idx, 5, QTableWidgetItem(txn[6]))   # Payment Mode (txn[6])
-            self.table.setItem(row_idx, 6, QTableWidgetItem(txn[7]))   # Vehicle Class (txn[7])
-            self.table.setItem(row_idx, 7, QTableWidgetItem(txn[8]))   # Booth (txn[8])
-            self.table.setItem(row_idx, 8, QTableWidgetItem(txn[9]))   # Camera (txn[9])
-            self.table.setItem(row_idx, 9, QTableWidgetItem(txn[10]))  # Title (txn[10])
-            self.table.setItem(row_idx, 10, QTableWidgetItem(txn[4]))  # Duration (re-using amount for duration as per original mapping)
+        for combo in self.filter_comboboxes.values():
+            combo.clear()
+            combo.addItem("") 
+
+        for label, col_index in filter_map.items():
+            if col_index < len(transaction_data[0]) if transaction_data else False:
+                unique_values = sorted(list(set(str(txn[col_index]).strip() for txn in transaction_data)))
+                self.filter_comboboxes[label].addItems(unique_values)
+
+    def populate_transaction_table(self, data):
+        self.table.setRowCount(0)
+        if not data:
+            return
+        
+        self.table.setRowCount(len(data))
+        
+        for row_idx, txn in enumerate(data):
+            self.table.setItem(row_idx, 0, QTableWidgetItem(str(txn[1]))) # Time
+            self.table.setItem(row_idx, 1, QTableWidgetItem(str(txn[2]))) # TC Class
+            self.table.setItem(row_idx, 2, QTableWidgetItem(str(txn[3]))) # AVC
+            self.table.setItem(row_idx, 3, QTableWidgetItem(str(txn[4]))) # Amount
+            self.table.setItem(row_idx, 4, QTableWidgetItem(str(txn[5]))) # VehRegNo
+            self.table.setItem(row_idx, 5, QTableWidgetItem(str(txn[6]))) # Payment Mode
+            self.table.setItem(row_idx, 6, QTableWidgetItem(str(txn[7]))) # Vehicle Class
+            self.table.setItem(row_idx, 7, QTableWidgetItem(str(txn[8]))) # Booth
+            self.table.setItem(row_idx, 8, QTableWidgetItem(str(txn[9]))) # Camera
+            self.table.setItem(row_idx, 9, QTableWidgetItem(str(txn[10]))) # Title
+            self.table.setItem(row_idx, 10, QTableWidgetItem(str(txn[11]))) # Duration
+            self.table.setItem(row_idx, 11, QTableWidgetItem(str(txn[21]))) # lp_image_path
+            self.table.setItem(row_idx, 12, QTableWidgetItem(str(txn[22]))) # all_image_path
+            self.table.setItem(row_idx, 13, QTableWidgetItem(str(txn[23]))) # video_path
 
     def on_table_row_selected(self, row, column):
-        """
-        Handler for when a row in the transaction table is clicked.
-        Updates the info box with transaction details, loads images,
-        and plays the associated video.
-        """
-        txn = transaction_data[row] # Get the selected transaction data
+        global transaction_data
+        if not transaction_data or row >= len(transaction_data):
+            return
 
-        # Update the info box with detailed transaction information
+        txn = transaction_data[row]
+
+        # Autofill top input fields
+        self.tran_id_input.setText(str(txn[0]))
+        self.veh_reg_input.setText(str(txn[5]))
+
         details = (
             f"<b>ID:</b> {txn[0]}<br>"
             f"<b>Title:</b> {txn[10]}<br>"
             f"<b>Timestamp:</b> {txn[1]}<br>"
-            f"<b>Duration:</b> {txn[4]}<br>" # Using txn[4] as Duration as per table mapping
+            f"<b>Duration:</b> {txn[11]}<br>"
             f"<b>Booth:</b> {txn[8]}<br>"
             f"<b>Camera:</b> {txn[9]}<br>"
             f"<b>Vehicle No:</b> {txn[5]}"
         )
         self.info_box.setText(details)
+        
+        lp_image_path = str(txn[21])
+        all_image_path = str(txn[22])
+        video_path = str(txn[23])
 
-        # --- Load LP Image ---
-        lp_image_path = txn[12]
         if os.path.exists(lp_image_path):
-            # Load pixmap, scale it to fit the label while maintaining aspect ratio
             pixmap = QPixmap(lp_image_path).scaled(self.lp_image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.lp_image_label.setPixmap(pixmap)
         else:
-            self.lp_image_label.setText("LP Image Not Found") # Display message if image not found
-            self.lp_image_label.setPixmap(QPixmap()) # Clear any previous pixmap
+            self.lp_image_label.setText("LP Image Not Found")
+            self.lp_image_label.setPixmap(QPixmap())
 
-        # --- Load All Images ---
-        all_image_path = txn[13]
         if os.path.exists(all_image_path):
             pixmap = QPixmap(all_image_path).scaled(self.all_image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.all_image_label.setPixmap(pixmap)
         else:
             self.all_image_label.setText("All Images Not Found")
-            self.all_image_label.setPixmap(QPixmap()) # Clear any previous pixmap
+            self.all_image_label.setPixmap(QPixmap())
 
-        # --- Play Video ---
-        video_path = txn[11]
         if os.path.exists(video_path):
-            # Use dynamicCall to interact with the ActiveX WMPlayer control
             self.player.dynamicCall('URL', video_path)
             self.current_video_path = video_path
         else:
             QMessageBox.warning(self, "Video Not Found", f"Video not found:\n{video_path}")
-            self.current_video_path = None # Reset current video path
+            self.current_video_path = None
 
     def refresh_table(self):
-        """
-        Resets all filter inputs, repopulates the transaction table with all data,
-        clears the info box and image displays, and stops video playback.
-        """
-        # Clear all filter input fields in the left panel
-        for entry in self.filter_entries.values():
-            entry.clear()
-        # Clear the specific filter inputs in the center panel
+        global transaction_data
+        transaction_data = get_transaction_data()
+        
+        for combo in self.filter_comboboxes.values():
+            combo.setCurrentIndex(0)
         self.tran_id_input.clear()
         self.veh_reg_input.clear()
 
-        self.populate_transaction_table() # Repopulate table with original, unfiltered data
+        for date_edit in self.date_filters.values():
+            date_edit.setDate(QDate.currentDate())
 
-        # Reset info box and image labels to their default states
+        self.populate_filter_comboboxes()
+        self.populate_transaction_table(transaction_data)
+
         self.info_box.setText("Select a transaction to see details")
         self.lp_image_label.clear()
         self.lp_image_label.setText("LP Image")
         self.all_image_label.clear()
         self.all_image_label.setText("All Images")
 
-        # Stop video playback if a video is currently loaded
         if self.current_video_path:
             self.player.dynamicCall('controls.stop')
         self.current_video_path = None
 
     def apply_filters(self):
-        """
-        This method is a placeholder for implementing actual data filtering logic.
-        It retrieves the current values from the Transaction ID and Vehicle Reg No inputs.
-        """
-        tran_id = self.tran_id_input.text()
-        veh_reg_no = self.veh_reg_input.text()
+        global transaction_data
+        
+        filters = {}
+        
+        for label, combo in self.filter_comboboxes.items():
+            value = combo.currentText().strip()
+            if value:
+                filters[label.replace(":", "")] = value
+                
+        tran_id_filter = self.tran_id_input.text().strip()
+        if tran_id_filter:
+            filters['Tran Id'] = tran_id_filter
 
-        # For demonstration, show a message box with the current filter values
-        QMessageBox.information(self, "Apply Filters",
-                                f"Applying filters:\nTransaction ID: '{tran_id}'\nVehicle Reg No: '{veh_reg_no}'\n"
-                                "Implement actual filtering logic here to update the table.")
-        # TODO: Implement actual filtering logic here.
-        # This would typically involve:
-        # 1. Filtering `transaction_data` based on `tran_id` and `veh_reg_no`.
-        # 2. Updating `self.table.setRowCount()` and then populating the table
-        #    with the `filtered_data`.
+        veh_reg_no_filter = self.veh_reg_input.text().strip().upper()
+        if veh_reg_no_filter:
+            filters['Veh Reg No'] = veh_reg_no_filter
+            
+        start_date_filter = self.date_filters["Start Date:"].date().toString("yyyy-MM-dd")
+        end_date_filter = self.date_filters["End Date:"].date().toString("yyyy-MM-dd")
+        
+        filter_map = {
+            'Tran Id': 0,
+            'Veh Reg No': 5,
+            'Lane': 12,
+            'Shift': 13,
+            'User': 14,
+            'Vehicle Class': 7,
+            'Payment Mode': 6,
+            'Pass Type': 16,
+            'Exempt Class': 15,
+        }
+
+        if not filters and not start_date_filter and not end_date_filter:
+            self.refresh_table()
+            return
+
+        filtered_data = []
+        for txn in transaction_data:
+            match = True
+            
+            for filter_name, filter_value in filters.items():
+                col_index = filter_map.get(filter_name)
+                if col_index is not None:
+                    if filter_name in ['Tran Id', 'Veh Reg No']:
+                        if filter_value.upper() not in str(txn[col_index]).strip().upper():
+                            match = False
+                            break
+                    else:
+                        if str(txn[col_index]).strip().upper() != filter_value.upper():
+                            match = False
+                            break
+
+            if match and start_date_filter and end_date_filter:
+                transaction_date_str = str(txn[1]).split(" ")[0]
+                if not (start_date_filter <= transaction_date_str <= end_date_filter):
+                    match = False
+            
+            if match:
+                filtered_data.append(txn)
+
+        if not filtered_data:
+            QMessageBox.information(self, "No Results", "No transactions matched your search criteria.")
+            self.populate_transaction_table([])
+        else:
+            self.populate_transaction_table(filtered_data)
 
     def audit_button_clicked(self, action_name):
-        """
-        Generic handler for all audit action buttons.
-        Displays a message box indicating which button was clicked.
-        """
         QMessageBox.information(self, "Audit Action",
-                                 f"Button '{action_name}' clicked.\nImplement audit logic here.")
+                                f"Button '{action_name}' clicked.\nImplement audit logic here.")
 
+    def export_pdf(self):
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export PDF", "", "PDF Files (*.pdf)")
+        if not filename:
+            return
 
-# --- Main Application Entry Point ---
+        printer = QPrinter(QPrinter.HighResolution)
+        printer.setOutputFormat(QPrinter.PdfFormat)
+        printer.setOutputFileName(filename)
+        printer.setPaperSize(QPrinter.A4)
+        printer.setOrientation(QPrinter.Landscape)
+
+        html = "<html><head><style>"
+        html += "table, th, td { border: 1px solid black; border-collapse: collapse; padding:4px; }"
+        html += "th { background-color: #f0f0f0; font-weight: bold; }"
+        html += "</style></head><body><table>"
+        # Headers
+        html += "<tr>"
+        for c in range(self.table.columnCount()):
+            item = self.table.horizontalHeaderItem(c)
+            html += "<th>{}</th>".format(item.text() if item else "")
+        html += "</tr>"
+        # Rows
+        for r in range(self.table.rowCount()):
+            html += "<tr>"
+            for c in range(self.table.columnCount()):
+                item = self.table.item(r, c)
+                html += "<td>{}</td>".format(item.text() if item else "")
+            html += "</tr>"
+        html += "</table></body></html>"
+
+        doc = QTextDocument()
+        doc.setHtml(html)
+        doc.setPageSize(printer.pageRect().size())
+        doc.print_(printer)
+
+        QMessageBox.information(self, "Exported", f"Table exported as PDF:\n{filename}")
+
 if __name__ == "__main__":
-    # Create the QApplication instance
     app = QApplication(sys.argv)
-    # Create an instance of the AuditApp main window
     audit_app = AuditApp()
-    # Show the main window
     audit_app.show()
-    # Start the Qt event loop and exit the application when it finishes
     sys.exit(app.exec_())
